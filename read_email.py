@@ -1,21 +1,17 @@
-#read_email.py
-import imaplib
+# read_email.py
 import email
-import email.utils
-import os
-import smtplib
-import ssl
+import imaplib
 import time
-from email.mime.text import MIMEText
-from email.header import decode_header
-from email.message import EmailMessage
-from datetime import datetime
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from db import get_db
 from models import Email
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from email.header import decode_header
+from email.message import EmailMessage
+from datetime import datetime
+import smtplib
+import ssl
 
 router = APIRouter(
     prefix="/read_mail"
@@ -23,12 +19,10 @@ router = APIRouter(
 
 start_time = time.time()
 
-
 def decode_str(s):
     if s:
         return decode_header(s)[0][0]
     return ""
-
 
 def get_body(msg):
     if msg.is_multipart():
@@ -36,18 +30,26 @@ def get_body(msg):
     else:
         return msg.get_payload(None, True)
 
+def run_read_and_store(email_address, password, db):
+    global emails_sent_today  # Declare as a global variable
+    emails_sent_today = 0
+
+    while emails_sent_today < 300:
+        sender = read_and_store(email_address, password, db)
+        time.sleep(10)
 
 @router.get("/read/emails")
-def read_emails(db: Session = Depends(get_db)):
+def read_emails(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     email_address = "netsmartzengg2001@hotmail.com"
-    # password = os.getenv('PASSWORD')
     password = "Netsmartz@1386"
 
-    sender = read_and_store(email_address, password, db)
-    return {"Sender is": sender}
+    # Add background task to run read_and_store every 10 seconds
+    background_tasks.add_task(run_read_and_store, email_address, password, db)
 
+    return {"Message": "Reading emails in the background."}
 
 def read_and_store(email_address, password, db: Session):
+    global emails_sent_today  # Declare as a global variable
     sender = []
     mail = imaplib.IMAP4_SSL("outlook.office365.com")
     mail.login(email_address, password)
@@ -62,8 +64,6 @@ def read_and_store(email_address, password, db: Session):
     _, messages = mail.search(None, "UNSEEN")
     message_ids = messages[0].split()
 
-    emails_sent_today = 0
-    # for msg_id in all_msg_id:
     for msg_id in message_ids:
         _, msg_data = mail.fetch(msg_id, "(RFC822)")
         for response_part in msg_data:
@@ -88,22 +88,22 @@ def read_and_store(email_address, password, db: Session):
                     received_at=received_at
                 )
                 db.add(email_data)
-                db.commit()
 
-                print("Stored in the database.")
-                print("=" * 50)
+    # Commit changes after processing all emails
+    db.commit()
 
     mail.close()
 
     for sender_mails in sender:
+        global emails_sent_today  # Declare as a global variable
         emails_sent_today += 1
         send_reply(sender_mails, db)
         if emails_sent_today >= 300:
             print("Daily email limit reached. Exiting.")
-            return {"Outlook Exception":"Daily Limit of 300 messages reached."}
+            return {"Outlook Exception": "Daily Limit of 300 messages reached."}
+
     mail.logout()
     return sender
-
 
 def send_reply(email_id: str, dbase):
     result = dbase.execute(select(Email).filter_by(sender=email_id))
@@ -118,7 +118,7 @@ def send_reply(email_id: str, dbase):
     else:
         print("Subject not found in email_data.")
 
-    print("="*30)
+    print("=" * 30)
     my_email = "netsmartzengg2001@hotmail.com"
     # password = os.getenv('PASSWORD')
     password = "Netsmartz@1386"
@@ -147,3 +147,4 @@ def send_reply(email_id: str, dbase):
     except Exception():
         raise HTTPException(status_code=404, detail="Email not found.")
     return 0
+
